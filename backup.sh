@@ -1,81 +1,107 @@
-#!/bin/bash 
+#!/bin/bash
 
-# which directory you want to save.
-BackupPath=/vagrant/bk
+# where will you store?
+BackupPath='/vagrant/Backups'
 
-# which directory you need to backup. 
-WebSite=/vagrant/backup_tool
+#Server name example in the Cloud: /app/testserver or /testserver
+ServerName='testserver'
 
-# mysql user and password
-MysqlUser="root" 
-MysqlPass="root" 
+#Cloud name Dropbox
+DropBoxBackup='true'
 
-# mysql path
+# get date
+CurrentDay=$(date +"%Y%m%d%H%M%S")
+SevenDay=$(date -d -7day +"%Y%m%d")
+
+# path setting
+# example /home/www  20141010-website.tar.gz
+FilePath=('/vagrant/test2' '/vagrant/test1' '/vagrant/test')
+NamePath=('test2' 'test1' 'test')
+
+# MYSQL setting
+# MYSQL user MYSQL password
+MysqlUser='root'
+MysqlPass='root'
+
+# MYSQL which database you want to backup?
+MysqlDbs=('sales25du' 'ec' 'oc')
+
+# CurrentDay MYSQL backup FileName
+CurrentDayMysqlFile=$CurrentDay'-mysql.tar.gz'
+
+# MYSQL Path 
 MYSQLDUMP=mysqldump
 MYSQL=mysql
 
-# Dropbox app root 
-DropboxDir=/$(date +%Y-%m-%d) 
-OldDropboxDIR=/$(date -d -30day +%Y-%m-%d) 
-
-# define file name
-CurrentDay=$(date +"%Y-%m-%d-%H%M%S")
-SevenDay=$(date -d -7day +"%Y-%m-%d-%H%M%S")
-
-DataBakName=$CurrentDay"_Database.tar.gz"
-WebBakName=$CurrentDay"_Web.tar.gz"
-OldData=$SevenDay"_Database.tar.gz" 
-OldWeb=$SevenDay"_Web.tar.gz" 
-
-# get current path
 CurrentPath=$(pwd)
 
-if [ ! -x "dropbox_uploader.sh" ]; then 
+# Dropbox/BaiduYun app root 
+CloudDir=/$(date +%Y%m%d) 
+OldCloudDIR=/$(date -d -30day +%Y%m%d) 
+
+# config done
+
+# download Dropbox_uploader.sh
+if [ ! -x "./dropbox_uploader.sh" ]; then 
 	wget https://raw.github.com/andreafabrizi/Dropbox-Uploader/master/dropbox_uploader.sh
 	chmod +x dropbox_uploader.sh
 fi 
+
+cd /
+
+
+# create directory
 if [ ! -x "$BackupPath" ]; then 
 	mkdir "$BackupPath" 
 fi 
+# write privilege
 if [ ! -w "$BackupPath" ] ; then
     chmod -R 700 $BackupPath 
 fi
 
-#crontab sh backup.sh
-
-echo  "* 1 * * * $CurrentPath/$0 > /dev/null 2>&1"  >> /var/spool/cron/root
-
-# export mysql db except Database information_schema mysql temp performance_schema
-MysqlDB=$($MYSQL -u$MysqlUser -p$MysqlPass -e "SHOW Databases;")
-
-echo -ne "Dump mysql..." 
+# export mysql db 
+echo -ne 'Dump mysql...' 
 cd $BackupPath
-for db in ${MysqlDB[@]}; do 
-	if [ $db != "Database" -a $db != "information_schema" -a $db != "mysql" -a $db != "temp" -a $db != "performance_schema" ]; then
-		($MYSQLDUMP -u$MysqlUser -p$MysqlPass ${db} > ${db}.sql) 
-	fi
+for db in ${MysqlDbs[@]}; do 
+	($MYSQLDUMP -u$MysqlUser -p$MysqlPass ${db} > ${db}.sql) 
 done 
-tar zcf $BackupPath/$DataBakName *.sql 
+tar zcf $BackupPath/$CurrentDayMysqlFile *.sql 
+tar zcf $BackupPath/$CurrentDayMysqlFile *.sql 
 rm -rf $BackupPath/*.sql 
-echo -e "Done" 
+echo -e 'Done'
 
-# backup website data
+# backup files 
 echo -ne "Backup website files..." 
-cd $WebSite
-tar zcf $BackupPath/$WebBakName * 
+TotalPaths=${#FilePath[@]}
+for (( i=0; i<$TotalPaths; i++)); do
+	cd ${FilePath[$i]}
+	TempPath=$(basename `pwd`)
+	cd ..
+	tar zcf $BackupPath/$CurrentDay'-'${NamePath[$i]}.tar.gz $TempPath/*
+done
 echo -e "Done" 
 
 # clean up 7day's backup at local
 echo -ne "Delete local data of 7 days old..." 
-rm -rf $BackupPath/$OldData $BackupPath/$OldWeb 
+echo $SevenDay
+rm -rf $BackupPath/$SevenDay*
 echo -e "Done" 
 
 # start Dropbox 
-echo -e "Start uploading..." 
-cd $CurrentPath
-./dropbox_uploader.sh upload $BackupPath/$DataBakName $DropboxDir/$DataBakName 
-./dropbox_uploader.sh upload $BackupPath/$WebBakName $DropboxDir/$WebBakName 
+if [ $DropBoxBackup == "true"  ]; then
+	echo -e "Start uploading(Dropbox)..." 
+	cd $CurrentPath
 
-# clean up 30day's backup at Dropbox 
-./dropbox_uploader.sh delete $OldDropboxDir/ 
+	CurrentFiles=$BackupPath/$CurrentDay*
+	for f in ${CurrentFiles[@]}; do 
+		./dropbox_uploader.sh upload $f $ServerName/$CloudDir/`basename $f`
+	done
+
+	# clean up 30day's backup at Dropbox 
+	echo -e "Start clean up 30day's backup at Dropbox"
+	./dropbox_uploader.sh delete $ServerName/$OldCloudDIR/ 
+fi
+
+echo -e "Upload done!" 
 echo -e "Thank you! All done." 
+

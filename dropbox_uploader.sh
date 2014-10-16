@@ -57,8 +57,9 @@ API_SHARES_URL="https://api.dropbox.com/1/shares"
 APP_CREATE_URL="https://www2.dropbox.com/developers/apps"
 RESPONSE_FILE="$TMP_DIR/du_resp_$RANDOM"
 CHUNK_FILE="$TMP_DIR/du_chunk_$RANDOM"
+TEMP_FILE="$TMP_DIR/du_tmp_$RANDOM"
 BIN_DEPS="sed basename date grep stat dd mkdir"
-VERSION="0.13"
+VERSION="0.14"
 
 umask 077
 
@@ -143,6 +144,21 @@ else
     HAVE_READLINK=0
 fi
 
+#Forcing to use the builtin printf, if it's present, because it's better
+#otherwise the external printf program will be used
+#Note that the external printf command can cause character encoding issues!
+builtin printf "" 2> /dev/null
+if [[ $? == 0 ]]; then
+    PRINTF="builtin printf"
+    PRINTF_OPT="-v o"
+else
+    PRINTF=$(which printf)
+    if [[ $? != 0 ]]; then
+        echo -e "Error: Required program could not be found: printf"
+    fi
+    PRINTF_OPT=""
+fi
+
 #Print the message based on $QUIET variable
 function print
 {
@@ -163,6 +179,7 @@ function remove_temp_files
     if [[ $DEBUG == 0 ]]; then
         rm -fr "$RESPONSE_FILE"
         rm -fr "$CHUNK_FILE"
+        rm -fr "$TEMP_FILE"
     fi
 }
 
@@ -300,7 +317,7 @@ function urlencode
         c=${string:$pos:1}
         case "$c" in
             [-_.~a-zA-Z0-9] ) o="${c}" ;;
-            * ) printf -v o '%%%02x' "'$c"
+            * ) $PRINTF $PRINTF_OPT '%%%02x' "'$c"
         esac
         encoded+="${o}"
     done
@@ -312,7 +329,14 @@ function normalize_path
 {
     path=$(echo -e "$1")
     if [[ $HAVE_READLINK == 1 ]]; then
-        readlink -m "$path"
+        new_path=$(readlink -m "$path")
+
+        #Adding back the final slash, if present in the source
+        if [[ "${path: -1}" == "/" ]]; then
+            new_path="$new_path/"
+        fi
+
+        echo "$new_path"
     else
         echo "$path"
     fi
@@ -378,9 +402,23 @@ function db_upload
         return
     fi
 
-    #Checking if DST it's a folder or if it doesn' exists (in this case will be the destination name)
     TYPE=$(db_stat "$DST")
-    if [[ $TYPE == "DIR" ]]; then
+
+    #If DST it's a file, do nothing, it's the default behaviour
+    if [[ $TYPE == "FILE" ]]; then
+        DST="$DST"
+
+    #if DST doesn't exists and doesn't ends with a /, it will be the destination file name
+    elif [[ $TYPE == "ERR" && "${DST: -1}" != "/" ]]; then
+        DST="$DST"
+
+    #if DST doesn't exists and ends with a /, it will be the destination folder
+    elif [[ $TYPE == "ERR" && "${DST: -1}" == "/" ]]; then
+        local filename=$(basename "$SRC")
+        DST="$DST/$filename"
+
+    #If DST it'a directory, it will be the destination folder
+    elif [[ $TYPE == "DIR" ]]; then
         local filename=$(basename "$SRC")
         DST="$DST/$filename"
     fi
@@ -906,8 +944,20 @@ function db_list
             local DIR_CONTENT=$(sed -n 's/.*: \[{\(.*\)/\1/p' "$RESPONSE_FILE" | sed 's/}, *{/}\
 {/g')
 
-            #Converting escaped quotes to unicode format and extracting files and subfolders
-            echo "$DIR_CONTENT" | sed 's/\\"/\\u0022/' | sed -n 's/.*"bytes": *\([0-9]*\),.*"path": *"\([^"]*\)",.*"is_dir": *\([^"]*\),.*/\2:\3;\1/p' > $RESPONSE_FILE
+            #Converting escaped quotes to unicode format
+            echo "$DIR_CONTENT" | sed 's/\\"/\\u0022/' > "$TEMP_FILE"
+
+            #Extracting files and subfolders
+            rm -fr "$RESPONSE_FILE"
+            while read -r line; do
+
+                local FILE=$(echo "$line" | sed -n 's/.*"path": *"\([^"]*\)".*/\1/p')
+                local IS_DIR=$(echo "$line" | sed -n 's/.*"is_dir": *\([^,]*\).*/\1/p')
+                local SIZE=$(echo "$line" | sed -n 's/.*"bytes": *\([0-9]*\).*/\1/p')
+
+                echo -e "$FILE:$IS_DIR;$SIZE" >> "$RESPONSE_FILE"
+
+            done < "$TEMP_FILE"
 
             #Looking for the biggest file size
             #to calculate the padding to use
@@ -920,9 +970,27 @@ function db_list
                 if [[ ${#SIZE} -gt $padding ]]; then
                     padding=${#SIZE}
                 fi
-            done < $RESPONSE_FILE
+            done < "$RESPONSE_FILE"
 
-            #For each entry...
+            #For each entry, printing directories...
+            while read -r line; do
+
+                local FILE=${line%:*}
+                local META=${line##*:}
+                local TYPE=${META%;*}
+                local SIZE=${META#*;}
+
+                #Removing unneeded /
+                FILE=${FILE##*/}
+
+                if [[ $TYPE == "true" ]]; then
+                    FILE=$(echo -e "$FILE")
+                    $PRINTF " [D] %-${padding}s %s\n" "$SIZE" "$FILE"
+                fi
+
+            done < "$RESPONSE_FILE"
+
+            #For each entry, printing files...
             while read -r line; do
 
                 local FILE=${line%:*}
@@ -934,15 +1002,11 @@ function db_list
                 FILE=${FILE##*/}
 
                 if [[ $TYPE == "false" ]]; then
-                    TYPE="F"
-                else
-                    TYPE="D"
+                    FILE=$(echo -e "$FILE")
+                    $PRINTF " [F] %-${padding}s %s\n" "$SIZE" "$FILE"
                 fi
 
-                FILE=$(echo -e "$FILE")
-                printf " [$TYPE] %-${padding}s %s\n" "$SIZE" "$FILE"
-
-            done < $RESPONSE_FILE
+            done < "$RESPONSE_FILE"
 
         #It's a file
         else
@@ -968,7 +1032,8 @@ function db_share
     #Check
     if grep -q "^HTTP/1.1 200 OK" "$RESPONSE_FILE"; then
         print " > Share link: "
-        echo $(sed -n 's/.*"url": "\([^"]*\).*/\1/p' "$RESPONSE_FILE")
+        SHARE_LINK=$(sed -n 's/.*"url": "\([^"]*\).*/\1/p' "$RESPONSE_FILE")
+        echo "$SHARE_LINK"
     else
         print "FAILED\n"
         ERROR_STATUS=1
@@ -1035,7 +1100,7 @@ else
             ACCESS_MSG="Full Dropbox"
         fi
 
-        echo -ne "\n > App key is $APPKEY, App secret is $APPSECRET and Access level is $ACCESS_MSG. Looks ok? [y/n]"
+        echo -ne "\n > App key is $APPKEY, App secret is $APPSECRET and Access level is $ACCESS_MSG. Looks ok? [y/n]: "
         read answer
         if [[ $answer == "y" ]]; then
             break;
@@ -1045,7 +1110,7 @@ else
 
     #TOKEN REQUESTS
     echo -ne "\n > Token request... "
-    $CURL_BIN $CURL_ACCEPT_CERTIFICATES -s --show-error --globoff -i -o $RESPONSE_FILE --data "oauth_consumer_key=$APPKEY&oauth_signature_method=PLAINTEXT&oauth_signature=$APPSECRET%26&oauth_timestamp=$(utime)&oauth_nonce=$RANDOM" "$API_REQUEST_TOKEN_URL" 2> /dev/null
+    $CURL_BIN $CURL_ACCEPT_CERTIFICATES -s --show-error --globoff -i -o "$RESPONSE_FILE" --data "oauth_consumer_key=$APPKEY&oauth_signature_method=PLAINTEXT&oauth_signature=$APPSECRET%26&oauth_timestamp=$(utime)&oauth_nonce=$RANDOM" "$API_REQUEST_TOKEN_URL" 2> /dev/null
     check_http_response
     OAUTH_TOKEN_SECRET=$(sed -n 's/oauth_token_secret=\([a-z A-Z 0-9]*\).*/\1/p' "$RESPONSE_FILE")
     OAUTH_TOKEN=$(sed -n 's/.*oauth_token=\([a-z A-Z 0-9]*\)/\1/p' "$RESPONSE_FILE")
@@ -1068,7 +1133,7 @@ else
 
         #API_ACCESS_TOKEN_URL
         echo -ne " > Access Token request... "
-        $CURL_BIN $CURL_ACCEPT_CERTIFICATES -s --show-error --globoff -i -o $RESPONSE_FILE --data "oauth_consumer_key=$APPKEY&oauth_token=$OAUTH_TOKEN&oauth_signature_method=PLAINTEXT&oauth_signature=$APPSECRET%26$OAUTH_TOKEN_SECRET&oauth_timestamp=$(utime)&oauth_nonce=$RANDOM" "$API_ACCESS_TOKEN_URL" 2> /dev/null
+        $CURL_BIN $CURL_ACCEPT_CERTIFICATES -s --show-error --globoff -i -o "$RESPONSE_FILE" --data "oauth_consumer_key=$APPKEY&oauth_token=$OAUTH_TOKEN&oauth_signature_method=PLAINTEXT&oauth_signature=$APPSECRET%26$OAUTH_TOKEN_SECRET&oauth_timestamp=$(utime)&oauth_nonce=$RANDOM" "$API_ACCESS_TOKEN_URL" 2> /dev/null
         check_http_response
         OAUTH_ACCESS_TOKEN_SECRET=$(sed -n 's/oauth_token_secret=\([a-z A-Z 0-9]*\)&.*/\1/p' "$RESPONSE_FILE")
         OAUTH_ACCESS_TOKEN=$(sed -n 's/.*oauth_token=\([a-z A-Z 0-9]*\)&.*/\1/p' "$RESPONSE_FILE")
