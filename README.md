@@ -8,7 +8,7 @@ server-backup-tool
 + `git clone https://github.com/kchum/server-backup-tool.git` 也可下载zip。
 + `cd server-backup-tool`
 + `vi backup.sh` 根据注释和自己需求编辑配置到 config done，并保存。
-+ `/path/to/server-backup-tool/backup.sh` 首次运行需配置 Dropbox 的 App key、App secret，根据提示的操作就可以了。配置一次即可。关于在 Dropbox 创建 app 有一些推荐配置，见下面
++ `/path/to/server-backup-tool/backup.sh` 首次运行需配置 Dropbox 的 App key、App secret，根据提示的操作就可以了。配置一次即可。关于在 Dropbox 创建 app 有一些推荐配置，见下面。
 
 ####2.配置备份任务周期
 + `crontab -e` 设置备份周期
