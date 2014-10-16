@@ -43,7 +43,7 @@ OldCloudDIR=/$(date -d -30day +%Y%m%d)
 
 # download Dropbox_uploader.sh
 if [ ! -x "./dropbox_uploader.sh" ]; then 
-	wget https://raw.github.com/andreafabrizi/Dropbox-Uploader/master/dropbox_uploader.sh
+	wget https://raw.githubusercontent.com/kchum/server-backup-tool/master/dropbox_uploader.sh
 	chmod +x dropbox_uploader.sh
 fi 
 
